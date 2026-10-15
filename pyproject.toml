@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Let coding agents watch videos: index once, then skim, search, zoom, and measure editing style. Runs locally."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = ["pillow", "numpy"]
 
 [project.scripts]
