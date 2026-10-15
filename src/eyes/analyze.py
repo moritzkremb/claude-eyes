@@ -25,11 +25,8 @@ def _ffmpeg() -> str:
 
 # ---------------------------------------------------------------- shots
 
-def detect_shots(media: str, duration: float, fps: float = 30.0, threshold: float = 0.3,
-                 soft: float = 0.06, spike: float = 4.0, min_len: float = 0.25) -> list[dict]:
-    """A cut is a frame-difference score above `threshold`, or a local spike: above `soft` and
-    `spike` times the median of its neighbours. Spikes catch jump cuts in talking heads, which a
-    single global threshold misses."""
+def scene_scores(media: str) -> tuple[list[float], list[float]]:
+    """Per-frame picture change scores (0-1) from ffmpeg's scene filter."""
     vf = "scale=256:-2,select='gte(scene,0)',metadata=print:key=lavfi.scene_score"
     base = [_ffmpeg(), "-hide_banner", "-nostats"]
     tail = ["-i", media, "-an", "-sn", "-vf", vf, "-f", "null", "-"]
@@ -46,7 +43,22 @@ def detect_shots(media: str, duration: float, fps: float = 30.0, threshold: floa
         if m and current is not None:
             times.append(current)
             scores.append(float(m.group(1)))
-    w = max(4, round((fps or 30) * 0.27))
+    return times, scores
+
+
+def detect_shots(media: str, duration: float, fps: float = 30.0, threshold: float = 0.3, **tuning) -> list[dict]:
+    times, scores = scene_scores(media)
+    cuts = pick_cuts(times, scores, duration, fps=fps, threshold=threshold, **tuning)
+    bounds = [0.0, *cuts, round(duration, 3)]
+    return [{"i": i, "start": a, "end": b, "len": round(b - a, 3)} for i, (a, b) in enumerate(zip(bounds, bounds[1:]))]
+
+
+def pick_cuts(times: list[float], scores: list[float], duration: float, *, fps: float = 30.0, threshold: float = 0.3,
+              soft: float = 0.04, spike: float = 5.0, window: float = 0.4, min_len: float = 0.25) -> list[float]:
+    """A cut is a frame-difference score above `threshold`, or a local spike: above `soft` and
+    `spike` times the median of its neighbours. Spikes catch jump cuts in talking heads, which a
+    single global threshold misses. Tuned on real edits with tests/eval_cuts.py."""
+    w = max(4, round((fps or 30) * window))
     found = []
     for i, score in enumerate(scores):
         if score < soft:
@@ -63,8 +75,7 @@ def detect_shots(media: str, duration: float, fps: float = 30.0, threshold: floa
         if cuts and t - cuts[-1] < min_len:
             continue
         cuts.append(round(t, 3))
-    bounds = [0.0, *cuts, round(duration, 3)]
-    return [{"i": i, "start": a, "end": b, "len": round(b - a, 3)} for i, (a, b) in enumerate(zip(bounds, bounds[1:]))]
+    return cuts
 
 
 # ---------------------------------------------------------------- frames

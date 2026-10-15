@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-eyes"
-version = "0.1.0"
+version = "0.2.0"
 description = "Let coding agents watch videos: index once, then skim, search, zoom, and measure editing style. Runs locally."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,7 @@ license-files = ["LICENSE"]
 dependencies = [
     "pillow",
     "numpy",
+    "yt-dlp",
     "rapidocr>=3; sys_platform != 'darwin'",
     "onnxruntime; sys_platform != 'darwin'",
 ]
@@ -25,3 +26,6 @@ eyes = "eyes.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/eyes"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills/eyes/SKILL.md" = "eyes/skill/SKILL.md"

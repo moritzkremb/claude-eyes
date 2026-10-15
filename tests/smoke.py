@@ -58,6 +58,16 @@ def main() -> None:
     eyes("dna", "smoke", env=env)
     eyes("report", "smoke", env=env)
     assert (vdir / "report.html").exists() or list(vdir.glob("*.html"))
+    eyes("view", "smoke", env=env)
+    assert "ALPHA" in (vdir / "view.html").read_text(encoding="utf-8") or not ocr.get("engine")
+    overview = json.loads(eyes("overview", "smoke", "--json", env=env))
+    assert overview["shots"] == 3 or len(overview["shots"]) == 3, overview["shots"]
+    json.loads(eyes("transcript", "smoke", "--json", env=env))
+    json.loads(eyes("setup", "--json", env=env))
+    error = subprocess.run(["eyes", "frames", "nope", "--at", "1", "--json"], capture_output=True, text=True, env=env)
+    assert error.returncode == 1 and "error" in json.loads(error.stdout)
+    eyes("install-skill", "--to", str(work / "skills"), env=env)
+    assert (work / "skills" / "eyes" / "SKILL.md").exists()
     print(f"OK: 3 shots, text engine {ocr.get('engine')}")
     shutil.rmtree(work, ignore_errors=True)
 

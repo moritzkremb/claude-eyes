@@ -1,0 +1,4 @@
+[
+ {"video": "~/videos/my-edit/cut.mp4", "edl": "~/videos/my-edit/final.edl.json"},
+ {"video": "~/videos/other.mp4", "cuts": [2.73, 6.5, 8.3]}
+]

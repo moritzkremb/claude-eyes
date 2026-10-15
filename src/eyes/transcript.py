@@ -81,7 +81,39 @@ def parse_vtt(path: str) -> list[dict]:
     return segments
 
 
-def _whisper(media: str, vdir: Path, lang: str | None, glossary: str | None) -> tuple[list[dict], str]:
+DTW_LAG = 0.1  # DTW token times trail the spoken word onset by about 100 ms
+
+
+def _dtw_preset(model: Path) -> str | None:
+    name = model.stem.removeprefix("ggml-")
+    name = re.sub(r"-q\d.*$", "", name).replace("-", ".")
+    presets = {"tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium", "medium.en",
+               "large.v1", "large.v2", "large.v3", "large.v3.turbo"}
+    return name if name in presets else None
+
+
+def whisper_words(data: dict) -> list[dict]:
+    """Word timings from whisper.cpp's full JSON: tokens that start with a space begin a new word."""
+    words: list[dict] = []
+    for seg in data.get("transcription", []):
+        for tok in seg.get("tokens", []):
+            text = tok.get("text") or ""
+            if text.startswith("[_") or not text.strip():
+                continue
+            off = tok.get("offsets") or {}
+            start = tok["t_dtw"] / 100 - DTW_LAG if tok.get("t_dtw", -1) >= 0 else off.get("from", 0) / 1000
+            if text.startswith(" ") or not words:
+                words.append({"start": round(max(0.0, start), 2), "end": round(off.get("to", 0) / 1000, 2), "text": text.strip()})
+            else:
+                words[-1]["text"] += text
+                words[-1]["end"] = round(off.get("to", 0) / 1000, 2)
+    for i, w in enumerate(words):
+        nxt = words[i + 1]["start"] if i + 1 < len(words) else w["start"] + 1
+        w["end"] = round(min(max(w["end"], w["start"] + 0.1), max(nxt, w["start"])), 2)
+    return [w for w in words if not re.fullmatch(r"\[.*\]|\(.*\)", w["text"])]
+
+
+def _whisper(media: str, vdir: Path, lang: str | None, glossary: str | None) -> tuple[list[dict], list[dict], str]:
     binary = whisper_binary()
     model = find_model()
     if not binary:
@@ -92,17 +124,21 @@ def _whisper(media: str, vdir: Path, lang: str | None, glossary: str | None) -> 
     wav = vdir / "audio16k.wav"
     run([ffmpeg, "-y", "-v", "error", "-i", media, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav])
     out = vdir / "whisper"
-    cmd = [binary, "-m", model, "-f", wav, "-oj", "-of", out, "-np", "-t", str(min(8, os.cpu_count() or 4))]
+    cmd = [binary, "-m", model, "-f", wav, "-ojf", "-of", out, "-np", "-t", str(min(8, os.cpu_count() or 4))]
     if not model.stem.endswith(".en"):
         cmd += ["-l", lang if lang else "auto"]
     if glossary:
         cmd += ["--prompt", glossary]
+    preset = _dtw_preset(model)
     log(f"transcribing locally with {model.name}…")
     try:
-        run(cmd)
+        # DTW gives accurate word timings but needs flash attention off; older builds may lack it.
+        if not preset or run([*cmd, "--dtw", preset, "-nfa"], check=False).returncode != 0:
+            run(cmd)
     finally:
         wav.unlink(missing_ok=True)
     data = read_json(out.with_suffix(".json"), {}) or {}
+    out.with_suffix(".json").unlink(missing_ok=True)
     segments = []
     for item in data.get("transcription", []):
         text = (item.get("text") or "").strip()
@@ -110,7 +146,7 @@ def _whisper(media: str, vdir: Path, lang: str | None, glossary: str | None) -> 
         if text and not re.fullmatch(r"\[.*\]|\(.*\)", text):
             segments.append({"start": round(offsets.get("from", 0) / 1000, 2),
                              "end": round(offsets.get("to", 0) / 1000, 2), "text": text})
-    return segments, f"whisper.cpp ({model.stem.removeprefix('ggml-')})"
+    return segments, whisper_words(data), f"whisper.cpp ({model.stem.removeprefix('ggml-')})"
 
 
 def _multipart(fields: dict, file_field: str, file_path: Path, mime: str) -> tuple[bytes, str]:
@@ -125,9 +161,12 @@ def _multipart(fields: dict, file_field: str, file_path: Path, mime: str) -> tup
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
-def scribe_segments(words: list[dict]) -> tuple[list[dict], list[dict]]:
+def scribe_segments(words: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
     """Group Scribe's word timings into caption-sized lines; sound events are kept apart."""
     segments, events, cur = [], [], None
+    timed = [{"start": round(w["start"], 2), "end": round(w["end"], 2), "text": w["text"].strip(),
+              **({"speaker": w["speaker_id"]} if w.get("speaker_id") else {})}
+             for w in words if w.get("type") == "word" and (w.get("text") or "").strip()]
     def close():
         nonlocal cur
         if cur and cur["text"].strip():
@@ -156,10 +195,10 @@ def scribe_segments(words: list[dict]) -> tuple[list[dict], list[dict]]:
     close()
     for s in segments:
         s.pop("_n")
-    return segments, events
+    return segments, events, timed
 
 
-def _elevenlabs(media: str, vdir: Path, lang: str | None, glossary: str | None) -> tuple[list[dict], list[dict], str]:
+def _elevenlabs(media: str, vdir: Path, lang: str | None, glossary: str | None) -> tuple[list[dict], list[dict], list[dict], str]:
     key = env_key("ELEVENLABS_API_KEY")
     if not key:
         raise SystemExit("ELEVENLABS_API_KEY is not set (environment or ./.env)")
@@ -174,7 +213,7 @@ def _elevenlabs(media: str, vdir: Path, lang: str | None, glossary: str | None) 
         fields["keyterms"] = [t.strip() for t in glossary.split(",") if t.strip()]
     body, ctype = _multipart(fields, "file", audio, "audio/mpeg")
     request = urllib.request.Request(SCRIBE_URL, data=body, method="POST", headers={
-        "xi-api-key": key, "Content-Type": ctype, "User-Agent": "claude-eyes/0.1"})
+        "xi-api-key": key, "Content-Type": ctype, "User-Agent": "claude-eyes/0.2"})
     log(f"uploading audio to ElevenLabs Scribe ({audio.stat().st_size / 1e6:.1f} MB)…")
     try:
         with urllib.request.urlopen(request, timeout=900) as response:
@@ -183,15 +222,15 @@ def _elevenlabs(media: str, vdir: Path, lang: str | None, glossary: str | None) 
         raise SystemExit(f"ElevenLabs failed ({exc.code}): {exc.read().decode('utf-8', 'replace')[:300]}") from None
     finally:
         audio.unlink(missing_ok=True)
-    segments, events = scribe_segments(data.get("words") or [])
-    return segments, events, f"elevenlabs ({SCRIBE_MODEL})"
+    segments, events, words = scribe_segments(data.get("words") or [])
+    return segments, events, words, f"elevenlabs ({SCRIBE_MODEL})"
 
 
 def build(media: str, vdir: Path, src: dict, meta: dict, *, lang: str | None = None, glossary: str | None = None,
           transcriber: str = "auto") -> dict:
     if transcriber not in TRANSCRIBERS:
         raise SystemExit(f"Unknown transcriber {transcriber!r}; use one of {', '.join(TRANSCRIBERS)}")
-    segments, events, source, note = [], [], None, None
+    segments, events, timings, source, note = [], [], [], None, None
     def captions() -> tuple[list[dict], str | None]:
         try:
             return parse_vtt(src["captions"]), f"{src.get('caption_kind', 'platform')} captions"
@@ -203,7 +242,7 @@ def build(media: str, vdir: Path, src: dict, meta: dict, *, lang: str | None = N
     if not meta.get("has_audio"):
         note = "no audio stream"
     elif transcriber == "elevenlabs":
-        segments, events, source = _elevenlabs(media, vdir, lang, glossary)
+        segments, events, timings, source = _elevenlabs(media, vdir, lang, glossary)
     else:
         # Creator-uploaded captions are the most accurate; automatic platform captions lose to local whisper.
         use_captions = has_captions and (transcriber == "captions" or (transcriber == "auto" and (manual or not whisper_ready())))
@@ -211,7 +250,7 @@ def build(media: str, vdir: Path, src: dict, meta: dict, *, lang: str | None = N
             segments, source = captions()
         if not segments:
             try:
-                segments, source = _whisper(media, vdir, lang, glossary)
+                segments, timings, source = _whisper(media, vdir, lang, glossary)
             except SystemExit as exc:
                 if has_captions and not use_captions:
                     segments, source = captions()
@@ -225,4 +264,5 @@ def build(media: str, vdir: Path, src: dict, meta: dict, *, lang: str | None = N
         "words_per_minute": round(words / (spoken / 60), 1) if spoken > 5 else None,
         "speech_coverage": round(min(1.0, spoken / duration), 3) if duration else None,
         **({"speakers": speakers, "events": events} if source and source.startswith("elevenlabs") else {}),
+        "word_timings": timings,
     }

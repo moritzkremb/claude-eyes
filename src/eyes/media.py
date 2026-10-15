@@ -1,12 +1,25 @@
 """Source ingest: download URLs with yt-dlp, fingerprint local files, probe streams."""
 from __future__ import annotations
 
+import importlib.util
 import json
+import shutil
+import sys
 from pathlib import Path
 
 from .common import HOME, file_fingerprint, install_hint, is_url, log, need, read_json, run, slug, write_json
 
 YTDLP_HINT = f"Install yt-dlp ({install_hint('yt-dlp')}) to index URLs, or pass a local file."
+
+
+def ytdlp_cmd() -> list[str]:
+    """yt-dlp on PATH (often newer), else the copy installed with eyes."""
+    path = shutil.which("yt-dlp")
+    if path:
+        return [path]
+    if importlib.util.find_spec("yt_dlp"):
+        return [sys.executable, "-m", "yt_dlp"]
+    raise SystemExit(f"yt-dlp not found. {YTDLP_HINT}")
 
 
 def _pick_caption(info: dict, lang: str | None) -> tuple[str, str] | None:
@@ -33,9 +46,9 @@ def ingest(source: str, *, lang: str | None = None, quality: int = 720, force: b
 
 
 def _ingest_url(url: str, *, lang: str | None, quality: int, force: bool) -> tuple[str, Path, dict]:
-    ytdlp = need("yt-dlp", YTDLP_HINT)
+    ytdlp = ytdlp_cmd()
     log("reading metadata with yt-dlp…")
-    info = json.loads(run([ytdlp, "-J", "--no-playlist", "--no-warnings", "--", url]).stdout)
+    info = json.loads(run([*ytdlp, "-J", "--no-playlist", "--no-warnings", "--", url]).stdout)
     vid = slug(f"{info.get('extractor_key', 'web')}-{info['id']}", 60)
     vdir = HOME / vid
     vdir.mkdir(parents=True, exist_ok=True)
@@ -46,7 +59,7 @@ def _ingest_url(url: str, *, lang: str | None, quality: int, force: bool) -> tup
     if not media or not media.exists():
         log(f"downloading video (≤{quality}p)…")
         fmt = f"bv*[height<={quality}]+ba/b[height<={quality}]/bv*+ba/b"
-        run([ytdlp, "--no-playlist", "--no-warnings", "-f", fmt, "--merge-output-format", "mp4",
+        run([*ytdlp, "--no-playlist", "--no-warnings", "-f", fmt, "--merge-output-format", "mp4",
              "-o", str(vdir / "video.%(ext)s"), "--", url])
         found = sorted(p for p in vdir.glob("video.*") if p.suffix not in (".part", ".ytdl", ".vtt"))
         if not found:
@@ -61,7 +74,7 @@ def _ingest_url(url: str, *, lang: str | None, quality: int, force: bool) -> tup
             log(f"fetching {caption_kind} captions ({key})…")
             for old in vdir.glob("captions*.vtt"):
                 old.unlink()
-            run([ytdlp, "--skip-download", "--no-playlist", "--no-warnings",
+            run([*ytdlp, "--skip-download", "--no-playlist", "--no-warnings",
                  "--write-subs" if caption_kind == "manual" else "--write-auto-subs",
                  "--sub-langs", key, "--sub-format", "vtt/best", "--convert-subs", "vtt",
                  "-o", str(vdir / "captions.%(ext)s"), "--", url], check=False)

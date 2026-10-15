@@ -4,7 +4,7 @@
 
 Claude, Codex and other coding agents can read text and look at images, but they can't watch a video. Eyes turns any
 video into evidence an agent can read, then lets it move around inside the video the way you would: skim, search, zoom
-in, and measure. Everything runs on your Mac. Nothing is uploaded.
+in, and measure. Everything runs on your computer. Nothing is uploaded.
 
 ![Agents take text, images and PDFs, but not video or audio](docs/images/no-video.jpg)
 
@@ -28,30 +28,30 @@ Claude: eyes index "https://youtube.com/watch?v=..."
 | **Study competitors** | Hooks, pacing and caption style of their videos, side by side |
 | **Find clips in a longform** | Moments worth cutting into shorts, with exact in and out points |
 
-## Install
+## Install: tell your agent
 
-Works on macOS, Linux and Windows. You need Python 3.10+ and ffmpeg (`brew install ffmpeg`,
-`sudo apt install ffmpeg` or `winget install ffmpeg`).
+Paste this into Claude Code, Codex, Cursor or any agent that can run commands:
 
-```bash
-uv tool install git+https://github.com/moritzkremb/claude-eyes   # or: pipx install git+https://github.com/moritzkremb/claude-eyes
-eyes setup                                                       # checks everything and says what's missing
+```text
+Install Eyes from https://github.com/moritzkremb/claude-eyes and set it up for yourself.
 ```
 
-Then give your agent the skill, which teaches it how to use Eyes well:
+The agent follows [AGENTS.md](AGENTS.md), which comes down to four commands:
 
 ```bash
-mkdir -p ~/.claude/skills && cp -r skills/eyes ~/.claude/skills/   # Claude Code
+uv tool install git+https://github.com/moritzkremb/claude-eyes   # or pipx install / pip install --user
+eyes setup --fix        # installs ffmpeg, whisper.cpp and a speech model where it can
+eyes install-skill      # teaches your agents (Claude Code, Codex, Cursor) how to use Eyes
+eyes setup              # prints READY when everything works
 ```
 
-Optional extras (`eyes setup` prints the right install command for your system):
-- **yt-dlp** to index YouTube and other URLs
-- **whisper.cpp** plus `eyes setup --download-model small.en` for local transcripts
-- **An ElevenLabs API key** (`ELEVENLABS_API_KEY`) if you want the opt-in cloud transcriber
-- On-screen text works out of the box: Apple Vision on macOS, RapidOCR on Linux and Windows. On a Mac you can
-  add RapidOCR too with `uv tool install "claude-eyes[ocr] @ git+https://github.com/moritzkremb/claude-eyes"`.
+Restart the agent, then just ask: *"Use eyes to watch this video and tell me..."*
 
-Now just ask: *"Use eyes to watch this video and tell me..."*
+Works on macOS, Linux and Windows with Python 3.10+. Prefer to only add the skill? `npx skills add
+moritzkremb/claude-eyes` installs it, and the skill installs the command line tool the first time it's used.
+
+Optional: an ElevenLabs API key (`ELEVENLABS_API_KEY`) for the opt-in cloud transcriber. On-screen text works out of
+the box (Apple Vision on macOS, RapidOCR elsewhere).
 
 ## How it works
 
@@ -82,9 +82,14 @@ every claim can point to a moment:
 **Finding cuts properly.** The usual way is ffmpeg's scene filter with a fixed threshold. On a talking-head short
 with 15 real cuts, the standard setting found 1. Most jump cuts barely change the picture: same face, same
 background. Eyes looks for sudden spikes compared with the frames right around each moment, so small but instant
-changes still count. On the same short it found 13 of 15.
+changes still count. On the same short it found 13 of 15, and across 7 test edits with known cut lists it found
+88 of 92 cuts (96%).
 
 ![Spike detection: 13 of 15 jump cuts found](docs/images/cut-detection.jpg)
+
+**Word-exact timestamps.** Local transcripts come with a start and end time for every word, typically within
+0.05 s. Search hits point at the word itself, not the start of the sentence, and `eyes transcript ID --words`
+gives the agent exact in and out points for clips.
 
 **Better transcripts when you need them.** By default everything stays local. Add `--transcriber elevenlabs` to
 send the audio to [ElevenLabs Scribe](https://elevenlabs.io/speech-to-text) instead. You get speaker labels and
@@ -114,9 +119,9 @@ hundreds.
 
 ```text
 $ eyes search playbook
-# 25 match(es) for 'playbook'
-- draft-06 @ 0:11 [said] the video you wanted to edit and either write a prompt or pick one of the playbooks.
+# 3 match(es) for 'playbook'
 - draft-06 @ 0:15 [shown] or pick a Playbook
+- draft-06 @ 0:16.1 [said] the video you wanted to edit and either write a prompt or pick one of the playbooks.
 - draft-06 @ 0:49 [shown] 02 Prompt or Playbook
 ```
 
@@ -163,12 +168,21 @@ eyes report moat --vs my-render --open    # single-file HTML report, side by sid
 
 Fix what's off, re-render, compare again.
 
+### See what the agent sees
+
+`eyes view ID --open` opens a player with everything Eyes found laid over the video: boxes around the text it read,
+a flash on every cut, the transcript highlighted word by word, and a timeline with cuts, speech, on-screen text and
+loudness. Click anywhere to jump there, or search. It's a single HTML file, so you can double-click it later.
+
+![The Eyes viewer: video with text boxes, word-by-word transcript and timeline lanes](docs/images/view.jpg)
+
 ## Commands
 
 ```text
 eyes index SRC          build the index for a URL or file
 eyes overview REF       reprint the index summary
 eyes search QUERY       words said or shown, across one video (--in REF) or the whole library
+eyes transcript REF     what was said (--range START-END, --words for per-word times)
 eyes frames REF         frames at timestamps (--at) or across a range (--range, --fps)
 eyes burst REF T        dense frames around one moment
 eyes crop REF T --box   high-resolution crop of one region (fractions x,y,w,h)
@@ -176,11 +190,16 @@ eyes dna REF            measured editing style (pacing, captions, audio, color)
 eyes note REF KEY TEXT  add a style note from viewing the sheets
 eyes compare REF CAND   how closely an edit matches a reference
 eyes report REF         single-file HTML report (--vs CAND for side by side)
+eyes view REF           interactive player with everything Eyes found (--open)
 eyes library            list indexed videos
-eyes setup              check dependencies (--download-model NAME fetches a whisper.cpp model)
+eyes setup              check dependencies (--fix installs what's missing, --download-model NAME)
+eyes install-skill      add the skill to Claude Code, Codex and Cursor (--to DIR for another folder)
 ```
 
-`REF` can be any unique part of a video's id or title, its URL, or its file path.
+`REF` can be any unique part of a video's id or title, its URL, or its file path. Every command takes `--json` for
+structured output, and errors always end with the command that fixes them.
+
+See [ROADMAP.md](ROADMAP.md) for what's planned next.
 
 ## Good to know
 

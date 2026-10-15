@@ -5,3 +5,5 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+tests/*.local.json
+uv.lock
