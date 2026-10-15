@@ -24,6 +24,7 @@ def eyes(*args: str, env: dict) -> str:
 
 
 def main() -> None:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     work = Path(tempfile.mkdtemp(prefix="eyes-smoke-"))
     env = {**os.environ, "EYES_HOME": str(work / "cache")}
     colors = [(30, 60, 160), (160, 40, 40), (30, 130, 60)]

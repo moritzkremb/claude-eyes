@@ -30,10 +30,12 @@ Claude: eyes index "https://youtube.com/watch?v=..."
 
 ## Install
 
+Works on macOS, Linux and Windows. You need Python 3.10+ and ffmpeg (`brew install ffmpeg`,
+`sudo apt install ffmpeg` or `winget install ffmpeg`).
+
 ```bash
-brew install ffmpeg
 uv tool install git+https://github.com/moritzkremb/claude-eyes   # or: pipx install git+https://github.com/moritzkremb/claude-eyes
-eyes setup                                                # checks everything and says what's missing
+eyes setup                                                       # checks everything and says what's missing
 ```
 
 Then give your agent the skill, which teaches it how to use Eyes well:
@@ -42,10 +44,12 @@ Then give your agent the skill, which teaches it how to use Eyes well:
 mkdir -p ~/.claude/skills && cp -r skills/eyes ~/.claude/skills/   # Claude Code
 ```
 
-Optional extras:
-- `brew install yt-dlp` to index YouTube and other URLs
-- `brew install whisper-cpp` and `eyes setup --download-model small.en` for videos without captions
-- On-screen text uses Apple Vision on macOS (automatic) or `tesseract` elsewhere
+Optional extras (`eyes setup` prints the right install command for your system):
+- **yt-dlp** to index YouTube and other URLs
+- **whisper.cpp** plus `eyes setup --download-model small.en` for local transcripts
+- **An ElevenLabs API key** (`ELEVENLABS_API_KEY`) if you want the opt-in cloud transcriber
+- On-screen text works out of the box: Apple Vision on macOS, RapidOCR on Linux and Windows. On a Mac you can
+  add RapidOCR too with `uv tool install "claude-eyes[ocr] @ git+https://github.com/moritzkremb/claude-eyes"`.
 
 Now just ask: *"Use eyes to watch this video and tell me..."*
 
@@ -65,7 +69,8 @@ It records five tracks:
 
 - **Pictures:** frames sampled at 0.5 to 4 per second, laid out as labelled contact sheets.
 - **Cuts:** every place the picture jumps to a new shot.
-- **Words said:** the platform's captions, or a transcript made locally with whisper.cpp.
+- **Words said:** captions the creator uploaded, else a transcript made locally with whisper.cpp, else the
+  platform's automatic captions.
 - **Words shown:** on-screen text with its timing and position on screen.
 - **Sound and color:** a loudness curve, silences, beat estimate and the color palette.
 
@@ -80,6 +85,23 @@ background. Eyes looks for sudden spikes compared with the frames right around e
 changes still count. On the same short it found 13 of 15.
 
 ![Spike detection: 13 of 15 jump cuts found](docs/images/cut-detection.jpg)
+
+**Better transcripts when you need them.** By default everything stays local. Add `--transcriber elevenlabs` to
+send the audio to [ElevenLabs Scribe](https://elevenlabs.io/speech-to-text) instead. You get speaker labels and
+sound events, so the agent can tell who said what and "hear" music, laughter or applause:
+
+```text
+$ eyes index reference.mp4 --transcriber elevenlabs
+## Sounds (heard, not said)
+- [0:00] upbeat music
+- [2:02] upbeat music
+
+## Transcript (what was said)
+[0:09] S1: Can you hear me?
+[0:11] S2: You're on mute.
+```
+
+`--glossary "FrameJam, Claude Code"` helps both whisper and ElevenLabs spell names right.
 
 ### 2. Navigate: skim, search, zoom
 
@@ -162,10 +184,10 @@ eyes setup              check dependencies (--download-model NAME fetches a whis
 
 ## Good to know
 
-- **Private by default.** Video and audio never leave your machine. URLs are downloaded with yt-dlp without your
-  browser cookies.
-- **No real hearing.** Speech arrives as a transcript; music only as loudness and beat estimates. The agent can't
-  judge tone of voice or sound design.
+- **Private by default.** Video and audio never leave your machine, unless you choose `--transcriber elevenlabs`,
+  which uploads the audio track only. URLs are downloaded with yt-dlp without your browser cookies.
+- **Limited hearing.** Speech arrives as a transcript; music as loudness and beat estimates, plus sound events with
+  ElevenLabs. The agent still can't judge tone of voice or sound design.
 - **Samples, not every frame.** Contact sheets are samples. The agent should zoom in before claiming small details,
   and the skill tells it to.
 - **Cut detection limits.** Slow dissolves can be missed, and big graphic changes in split-screen edits count as cuts.
