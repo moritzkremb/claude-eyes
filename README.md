@@ -6,9 +6,9 @@ Claude, Codex and other coding agents can read text and look at images, but they
 video into evidence an agent can read, then lets it move around inside the video the way you would: skim, search, zoom
 in, and measure. Everything runs on your computer. Nothing is uploaded.
 
-[![Watch the 90-second explainer](docs/images/explainer-poster.jpg)](docs/eyes-explainer.mp4)
+[![Watch the explainer (1.5 min)](docs/images/explainer-poster.jpg)](docs/eyes-explainer.mp4)
 
-*90 seconds: what Eyes does, with real examples. We also ran Eyes on this video itself: it read every word said and
+*About a minute and a half: what Eyes does, with real examples. We also ran Eyes on this video itself: it read every word said and
 shown correctly, flagged narration that was too fast (222 words a minute) and two empty moments, which we fixed, and
 showed that it misses soft dissolves (now on the [roadmap](ROADMAP.md)).*
 
