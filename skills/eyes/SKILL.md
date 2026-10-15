@@ -17,7 +17,7 @@ navigate it: skim, search, zoom, measure. Every answer should rest on frames you
 with timestamps.
 
 Run `eyes <command>`. First use in a session: `eyes setup`. If `eyes` is not on PATH, install it with
-`uv tool install git+https://github.com/moritzkremb/eyes` (or `pipx install git+…`), then run `eyes setup`.
+`uv tool install git+https://github.com/moritzkremb/claude-eyes` (or `pipx install git+…`), then run `eyes setup`.
 Required: Python 3.10+, ffmpeg (Pillow and numpy come with the install). Optional: yt-dlp (URLs), whisper.cpp + a model (videos without
 captions; `setup --download-model small.en`), Apple Vision (macOS, automatic) or tesseract for on-screen text.
 

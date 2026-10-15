@@ -1,4 +1,4 @@
-# Eyes
+# Claude Eyes
 
 **Give your coding agent eyes for video.**
 
@@ -32,7 +32,7 @@ Claude: eyes index "https://youtube.com/watch?v=..."
 
 ```bash
 brew install ffmpeg
-uv tool install git+https://github.com/moritzkremb/eyes   # or: pipx install git+https://github.com/moritzkremb/eyes
+uv tool install git+https://github.com/moritzkremb/claude-eyes   # or: pipx install git+https://github.com/moritzkremb/claude-eyes
 eyes setup                                                # checks everything and says what's missing
 ```
 

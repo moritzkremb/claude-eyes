@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "eyes-video"
+name = "claude-eyes"
 version = "0.1.0"
 description = "Let coding agents watch videos: index once, then skim, search, zoom, and measure editing style. Runs locally."
 readme = "README.md"
