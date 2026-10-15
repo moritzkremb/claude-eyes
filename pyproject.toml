@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "eyes-video"
+version = "0.1.0"
+description = "Let coding agents watch videos: index once, then skim, search, zoom, and measure editing style. Runs locally."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pillow", "numpy"]
+
+[project.scripts]
+eyes = "eyes.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eyes"]
