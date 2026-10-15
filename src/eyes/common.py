@@ -151,7 +151,9 @@ def file_fingerprint(path: Path) -> str:
 
 
 def load_library() -> dict:
-    return read_json(LIBRARY, {}) or {}
+    """Indexed videos whose cache folder still exists (deleting a folder removes the video)."""
+    lib = read_json(LIBRARY, {}) or {}
+    return {vid: entry for vid, entry in lib.items() if (HOME / vid).is_dir()}
 
 
 def save_library_entry(vid: str, entry: dict) -> None:

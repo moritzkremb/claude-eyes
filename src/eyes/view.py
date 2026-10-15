@@ -178,7 +178,8 @@ function tick(force){const t=v.currentTime;$('#tc').textContent=fmt(t);const i=s
  let w=-1;for(let j=0;j<D.words.length;j++){if(D.words[j][0]>t)break;if(t<=D.words[j][1]+0.05)w=j}
  if(w!==lastWord){if(wordEls[lastWord])wordEls[lastWord].classList.remove('cur');if(wordEls[w])wordEls[w].classList.add('cur');lastWord=w}
  drawOverlay(t);drawTL()}
-v.addEventListener('loadedmetadata',()=>{placeOverlay();tick(true)});window.addEventListener('resize',()=>{placeOverlay();tick(true)});
+v.addEventListener('loadedmetadata',()=>{placeOverlay();tick(true);const h=new URLSearchParams(location.hash.slice(1));
+ if(h.get('q')){$('#q').value=h.get('q');$('#q').oninput()}if(h.get('t'))seek(parseFloat(h.get('t')))});window.addEventListener('resize',()=>{placeOverlay();tick(true)});
 v.addEventListener('seeked',()=>tick(true));(function loop(){if(!v.paused)tick();requestAnimationFrame(loop)})();
 drawTL();
 </script></body></html>

@@ -15,5 +15,8 @@ Ideas for later, roughly in order of usefulness. Nothing here is promised.
 
 ## Small polish
 - `eyes rm ID` and `eyes clean` to manage the cache without touching folders.
-- Better dissolve and fade detection.
+- **Dissolve and fade detection.** Soft transitions are missed: on the explainer video (`docs/eyes-explainer.mp4`)
+  Eyes finds 0 of its 8 scene changes, because a blur dissolve on a dark slide changes each frame no more than the
+  animations inside a scene. Needs a windowed comparison (frames ~0.5 s apart) plus a check that both sides are
+  stable. The explainer's exact scene times make it a ready test case.
 - More eval cases for cut detection and word timings.
