@@ -3,17 +3,20 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import importlib.util
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from .common import HOME, SCRIPT_DIR, ffmpeg_input_args, fmt, log, need, run
+from .common import HOME, SCRIPT_DIR, ffmpeg_input_args, fmt, install_hint, log, need, run
 
-FFMPEG_HINT = "Install ffmpeg (brew install ffmpeg)."
+FFMPEG_HINT = f"Install ffmpeg ({install_hint('ffmpeg')})."
+OCR_ENGINES = ("auto", "vision", "rapidocr", "tesseract")
 
 
 def _ffmpeg() -> str:
@@ -203,25 +206,80 @@ def build_sheets(frames: list[dict], shots: list[dict], duration: float, vertica
 
 # ---------------------------------------------------------------- on-screen text
 
-def _ocr_engine() -> list[str] | None:
-    if sys.platform == "darwin" and shutil.which("swift"):
-        source = SCRIPT_DIR / "ocr.swift"
-        digest = hashlib.sha1(source.read_bytes()).hexdigest()[:10]
-        binary = HOME / "bin" / f"eyes-ocr-{digest}"
-        if not binary.exists() and shutil.which("swiftc"):
-            binary.parent.mkdir(parents=True, exist_ok=True)
-            log("compiling the Vision text recognizer (one time)…")
-            # A fresh Command Line Tools SDK can be newer than its compiler; older SDKs still build.
-            sdks = sorted(Path("/Library/Developer/CommandLineTools/SDKs").glob("MacOSX[0-9]*.sdk"),
-                          key=lambda p: [int(x) for x in re.findall(r"\d+", p.name)], reverse=True)
-            for extra in [[], *(["-sdk", str(s)] for s in sdks)]:
-                if subprocess.run(["swiftc", "-O", *extra, str(source), "-o", str(binary)], capture_output=True).returncode == 0:
-                    break
-                binary.unlink(missing_ok=True)
-        return [str(binary)] if binary.exists() else None
-    if shutil.which("tesseract"):
-        return ["tesseract"]
+def _vision_binary() -> Path | None:
+    if sys.platform != "darwin" or not shutil.which("swiftc"):
+        return None
+    source = SCRIPT_DIR / "ocr.swift"
+    digest = hashlib.sha1(source.read_bytes()).hexdigest()[:10]
+    binary = HOME / "bin" / f"eyes-ocr-{digest}"
+    if not binary.exists():
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        log("compiling the Vision text recognizer (one time)…")
+        # A fresh Command Line Tools SDK can be newer than its compiler; older SDKs still build.
+        sdks = sorted(Path("/Library/Developer/CommandLineTools/SDKs").glob("MacOSX[0-9]*.sdk"),
+                      key=lambda p: [int(x) for x in re.findall(r"\d+", p.name)], reverse=True)
+        for extra in [[], *(["-sdk", str(s)] for s in sdks)]:
+            if subprocess.run(["swiftc", "-O", *extra, str(source), "-o", str(binary)], capture_output=True).returncode == 0:
+                break
+            binary.unlink(missing_ok=True)
+    return binary if binary.exists() else None
+
+
+def ocr_engine(prefer: str | None = None) -> tuple[str, Path | None] | None:
+    """Best available engine: Apple Vision on macOS, else RapidOCR, else tesseract."""
+    choice = (prefer or os.environ.get("EYES_OCR") or "auto").lower()
+    if choice not in OCR_ENGINES:
+        raise SystemExit(f"Unknown text recognition engine {choice!r}; use one of {', '.join(OCR_ENGINES)}")
+    if choice in ("auto", "vision"):
+        binary = _vision_binary()
+        if binary:
+            return "apple-vision", binary
+    if choice in ("auto", "rapidocr") and importlib.util.find_spec("rapidocr") and importlib.util.find_spec("onnxruntime"):
+        return "rapidocr", None
+    if choice in ("auto", "tesseract") and shutil.which("tesseract"):
+        return "tesseract", None
     return None
+
+
+def _rapidocr(paths: list[str]) -> list[dict]:
+    import logging
+
+    from PIL import Image
+    from rapidocr import RapidOCR
+    logging.getLogger("RapidOCR").setLevel(logging.ERROR)
+    engine = RapidOCR()
+    results = []
+    for path in paths:
+        with Image.open(path) as img:
+            w, h = img.size
+        out = engine(path)
+        lines = []
+        for box, text, conf in zip(out.boxes if out.boxes is not None else [], out.txts or [], out.scores or []):
+            xs, ys = [float(p[0]) for p in box], [float(p[1]) for p in box]
+            lines.append({"text": text, "conf": float(conf),
+                          "box": [min(xs) / w, min(ys) / h, (max(xs) - min(xs)) / w, (max(ys) - min(ys)) / h]})
+        results.append({"path": path, "lines": _merge_words(lines)})
+    return results
+
+
+def _merge_words(lines: list[dict]) -> list[dict]:
+    """Join boxes that sit on one text line with small gaps, so each caption reads as one line."""
+    merged: list[dict] = []
+    for line in sorted(lines, key=lambda l: (round(l["box"][1] + l["box"][3] / 2, 2), l["box"][0])):
+        x, y, w, h = line["box"]
+        last = merged[-1] if merged else None
+        if last:
+            lx, ly, lw, lh = last["box"]
+            same_row = abs((ly + lh / 2) - (y + h / 2)) < 0.5 * min(lh, h) and 0.6 < h / max(lh, 1e-6) < 1.6
+            if same_row and 0 <= x - (lx + lw) < 1.5 * max(h, lh):
+                right, bottom = max(lx + lw, x + w), max(ly + lh, y + h)
+                top = min(ly, y)
+                last["box"] = [lx, top, right - lx, bottom - top]
+                last["text"] += " " + line["text"]
+                last["conf"] = min(last["conf"], line["conf"])
+                continue
+        merged.append(dict(line))
+    return merged
 
 
 def _tesseract(paths: list[str]) -> list[dict]:
@@ -230,7 +288,8 @@ def _tesseract(paths: list[str]) -> list[dict]:
     for path in paths:
         with Image.open(path) as img:
             w, h = img.size
-        out = subprocess.run(["tesseract", path, "stdout", "tsv"], capture_output=True, text=True).stdout
+        out = subprocess.run(["tesseract", path, "stdout", "tsv"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace").stdout
         groups: dict = {}
         for row in out.splitlines()[1:]:
             cols = row.split("\t")
@@ -254,8 +313,9 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", text.lower())).strip()
 
 
-def recognize_text(frames: list[dict], shots: list[dict], limit: int = 500, fast: bool = False) -> dict:
-    engine = _ocr_engine()
+def recognize_text(frames: list[dict], shots: list[dict], limit: int = 500, fast: bool = False,
+                   engine_name: str | None = None) -> dict:
+    engine = ocr_engine(engine_name)
     if not engine or not frames:
         return {"engine": None, "frames": [], "spans": [], "coverage": None}
     picked = frames
@@ -266,18 +326,19 @@ def recognize_text(frames: list[dict], shots: list[dict], limit: int = 500, fast
         chosen += [frames[int(i * step)] for i in range(limit - len(chosen))]
         picked = sorted({f["path"]: f for f in chosen}.values(), key=lambda f: f["t"])
     paths = [f["path"] for f in picked]
-    log(f"reading on-screen text in {len(paths)} frames…")
-    if engine[0] == "tesseract":
+    name, binary = engine
+    log(f"reading on-screen text in {len(paths)} frames with {name}…")
+    if name == "tesseract":
         raw = _tesseract(paths)
-        name = "tesseract"
+    elif name == "rapidocr":
+        raw = _rapidocr(paths)
     else:
-        cmd = engine + (["--fast"] if fast else [])
-        out = subprocess.run(cmd, input="\n".join(paths), capture_output=True, text=True)
+        cmd = [str(binary)] + (["--fast"] if fast else [])
+        out = subprocess.run(cmd, input="\n".join(paths), capture_output=True, text=True, encoding="utf-8", errors="replace")
         if out.returncode != 0:
             log(f"text recognition failed: {out.stderr.strip()[:300]}")
             return {"engine": None, "frames": [], "spans": [], "coverage": None}
         raw = [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
-        name = "apple-vision"
     by_path = {r.get("path"): r for r in raw}
     times = [f["t"] for f in picked]
     step = (times[-1] - times[0]) / max(1, len(times) - 1) if len(times) > 1 else 1.0

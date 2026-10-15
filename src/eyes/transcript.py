@@ -1,16 +1,28 @@
-"""Transcript track: platform captions first, then local whisper.cpp. Nothing is uploaded."""
+"""Transcript track.
+
+Default order: captions the creator uploaded, then local whisper.cpp, then the platform's automatic captions.
+ElevenLabs Scribe is opt-in (--transcriber elevenlabs) because it uploads the audio.
+"""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
+import urllib.error
+import urllib.request
+import uuid
 from pathlib import Path
 
-from .common import HOME, log, need, read_json, run
+from .common import HOME, env_key, install_hint, log, need, read_json, run
 
+TRANSCRIBERS = ("auto", "captions", "whisper", "elevenlabs")
+SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+SCRIBE_MODEL = "scribe_v2"
 MODEL_DIRS = [HOME / "models", Path.home() / ".cache" / "whisper.cpp", Path.home() / ".cache" / "whisper",
               Path.home() / ".cache" / "hyperframes" / "whisper" / "models",
-              Path("/opt/homebrew/share/whisper-cpp"), Path("/usr/local/share/whisper-cpp")]
+              Path("/opt/homebrew/share/whisper-cpp"), Path("/usr/local/share/whisper-cpp"),
+              Path("/usr/share/whisper-cpp")]
 MODEL_PREFERENCE = ["large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"]
 MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin"
 
@@ -32,6 +44,10 @@ def find_model() -> Path | None:
 
 def whisper_binary() -> str | None:
     return shutil.which("whisper-cli") or shutil.which("whisper-cpp")
+
+
+def whisper_ready() -> bool:
+    return bool(whisper_binary() and find_model())
 
 
 def _seconds(stamp: str) -> float:
@@ -69,10 +85,10 @@ def _whisper(media: str, vdir: Path, lang: str | None, glossary: str | None) -> 
     binary = whisper_binary()
     model = find_model()
     if not binary:
-        raise SystemExit("whisper-cli not found (brew install whisper-cpp)")
+        raise SystemExit(f"whisper-cli not found ({install_hint('whisper-cpp')})")
     if not model:
         raise SystemExit("no whisper.cpp model found; run: eyes setup --download-model small.en")
-    ffmpeg = need("ffmpeg", "Install ffmpeg (brew install ffmpeg).")
+    ffmpeg = need("ffmpeg", f"Install ffmpeg ({install_hint('ffmpeg')}).")
     wav = vdir / "audio16k.wav"
     run([ffmpeg, "-y", "-v", "error", "-i", media, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav])
     out = vdir / "whisper"
@@ -97,26 +113,116 @@ def _whisper(media: str, vdir: Path, lang: str | None, glossary: str | None) -> 
     return segments, f"whisper.cpp ({model.stem.removeprefix('ggml-')})"
 
 
-def build(media: str, vdir: Path, src: dict, meta: dict, *, lang: str | None = None, glossary: str | None = None) -> dict:
-    segments, source, note = [], None, None
-    if src.get("captions"):
+def _multipart(fields: dict, file_field: str, file_path: Path, mime: str) -> tuple[bytes, str]:
+    boundary = uuid.uuid4().hex
+    parts = []
+    for name, value in fields.items():
+        for v in value if isinstance(value, list) else [value]:
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{v}\r\n'.encode())
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{file_path.name}"\r\n'
+                 f"Content-Type: {mime}\r\n\r\n".encode() + file_path.read_bytes() + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def scribe_segments(words: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Group Scribe's word timings into caption-sized lines; sound events are kept apart."""
+    segments, events, cur = [], [], None
+    def close():
+        nonlocal cur
+        if cur and cur["text"].strip():
+            cur["text"] = re.sub(r"\s+", " ", cur["text"]).strip()
+            segments.append(cur)
+        cur = None
+    for w in words:
+        kind, text = w.get("type"), w.get("text") or ""
+        if kind == "audio_event":
+            events.append({"start": round(w["start"], 2), "end": round(w["end"], 2), "text": text.strip("()[] ")})
+            continue
+        if kind == "spacing":
+            if cur:
+                cur["text"] += text
+            continue
+        speaker = w.get("speaker_id")
+        if cur and (speaker != cur.get("speaker") or w["start"] - cur["end"] > 0.7 or cur["_n"] >= 18):
+            close()
+        if cur is None:
+            cur = {"start": round(w["start"], 2), "end": round(w["end"], 2), "text": "", "speaker": speaker, "_n": 0}
+        cur["text"] += text
+        cur["end"] = round(w["end"], 2)
+        cur["_n"] += 1
+        if re.search(r"[.?!]$", text) and cur["_n"] >= 4:
+            close()
+    close()
+    for s in segments:
+        s.pop("_n")
+    return segments, events
+
+
+def _elevenlabs(media: str, vdir: Path, lang: str | None, glossary: str | None) -> tuple[list[dict], list[dict], str]:
+    key = env_key("ELEVENLABS_API_KEY")
+    if not key:
+        raise SystemExit("ELEVENLABS_API_KEY is not set (environment or ./.env)")
+    ffmpeg = need("ffmpeg", f"Install ffmpeg ({install_hint('ffmpeg')}).")
+    audio = vdir / "audio-upload.mp3"
+    run([ffmpeg, "-y", "-v", "error", "-i", media, "-vn", "-ac", "1", "-b:a", "64k", audio])
+    fields: dict = {"model_id": SCRIBE_MODEL, "diarize": "true", "tag_audio_events": "true",
+                    "timestamps_granularity": "word"}
+    if lang:
+        fields["language_code"] = lang
+    if glossary:
+        fields["keyterms"] = [t.strip() for t in glossary.split(",") if t.strip()]
+    body, ctype = _multipart(fields, "file", audio, "audio/mpeg")
+    request = urllib.request.Request(SCRIBE_URL, data=body, method="POST", headers={
+        "xi-api-key": key, "Content-Type": ctype, "User-Agent": "claude-eyes/0.1"})
+    log(f"uploading audio to ElevenLabs Scribe ({audio.stat().st_size / 1e6:.1f} MB)…")
+    try:
+        with urllib.request.urlopen(request, timeout=900) as response:
+            data = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(f"ElevenLabs failed ({exc.code}): {exc.read().decode('utf-8', 'replace')[:300]}") from None
+    finally:
+        audio.unlink(missing_ok=True)
+    segments, events = scribe_segments(data.get("words") or [])
+    return segments, events, f"elevenlabs ({SCRIBE_MODEL})"
+
+
+def build(media: str, vdir: Path, src: dict, meta: dict, *, lang: str | None = None, glossary: str | None = None,
+          transcriber: str = "auto") -> dict:
+    if transcriber not in TRANSCRIBERS:
+        raise SystemExit(f"Unknown transcriber {transcriber!r}; use one of {', '.join(TRANSCRIBERS)}")
+    segments, events, source, note = [], [], None, None
+    def captions() -> tuple[list[dict], str | None]:
         try:
-            segments = parse_vtt(src["captions"])
-            source = f"{src.get('caption_kind', 'platform')} captions"
+            return parse_vtt(src["captions"]), f"{src.get('caption_kind', 'platform')} captions"
         except (OSError, ValueError) as exc:
-            note = f"caption parse failed: {exc}"
-    if not segments and meta.get("has_audio"):
-        try:
-            segments, source = _whisper(media, vdir, lang, glossary)
-        except SystemExit as exc:
-            note = f"no transcript: {exc}"
-    elif not meta.get("has_audio"):
+            log(f"caption parse failed: {exc}")
+            return [], None
+    has_captions = bool(src.get("captions"))
+    manual = has_captions and src.get("caption_kind") == "manual"
+    if not meta.get("has_audio"):
         note = "no audio stream"
+    elif transcriber == "elevenlabs":
+        segments, events, source = _elevenlabs(media, vdir, lang, glossary)
+    else:
+        # Creator-uploaded captions are the most accurate; automatic platform captions lose to local whisper.
+        use_captions = has_captions and (transcriber == "captions" or (transcriber == "auto" and (manual or not whisper_ready())))
+        if use_captions:
+            segments, source = captions()
+        if not segments:
+            try:
+                segments, source = _whisper(media, vdir, lang, glossary)
+            except SystemExit as exc:
+                if has_captions and not use_captions:
+                    segments, source = captions()
+                note = None if segments else f"no transcript: {exc}"
     words = sum(len(s["text"].split()) for s in segments)
     spoken = sum(max(0.0, s["end"] - s["start"]) for s in segments)
     duration = meta.get("duration") or 0
+    speakers = sorted({s["speaker"] for s in segments if s.get("speaker")})
     return {
         "source": source, "note": note, "segments": segments, "words": words,
         "words_per_minute": round(words / (spoken / 60), 1) if spoken > 5 else None,
         "speech_coverage": round(min(1.0, spoken / duration), 3) if duration else None,
+        **({"speakers": speakers, "events": events} if source and source.startswith("elevenlabs") else {}),
     }

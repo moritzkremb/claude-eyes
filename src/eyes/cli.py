@@ -20,13 +20,13 @@ import datetime as dt
 import importlib.util
 import re
 import shutil
-import subprocess
 import sys
 import urllib.request
+import webbrowser
 from pathlib import Path
 
-from .common import (HOME, fmt, fmt_precise, load_library, log, parse_range, parse_time, read_json, resolve,
-                    save_library_entry, write_json)
+from .common import (HOME, env_key, fmt, fmt_precise, install_hint, load_library, log, parse_range, parse_time,
+                     read_json, resolve, save_library_entry, write_json)
 
 INDEX_VERSION = 2
 
@@ -74,13 +74,14 @@ def cmd_index(args) -> int:
     if fresh_visuals or todo("sheets"):
         log("building contact sheets…")
         write_json(vdir / "sheets.json", analyze.build_sheets(frames, shots, duration, vertical, vdir / "sheets"))
-    if todo("transcript") or args.glossary:
-        write_json(vdir / "transcript.json", tr.build(src["media"], vdir, src, meta, lang=args.lang, glossary=args.glossary))
+    if todo("transcript") or args.glossary or args.transcriber:
+        write_json(vdir / "transcript.json", tr.build(src["media"], vdir, src, meta, lang=args.lang, glossary=args.glossary,
+                                                      transcriber=args.transcriber or "auto"))
     if args.no_ocr:
         if not (vdir / "ocr.json").exists():
             write_json(vdir / "ocr.json", {"engine": None, "frames": [], "spans": [], "coverage": None})
-    elif fresh_visuals or todo("ocr") or not (read_json(vdir / "ocr.json", {}) or {}).get("engine"):
-        write_json(vdir / "ocr.json", analyze.recognize_text(frames, shots, fast=args.ocr_fast))
+    elif fresh_visuals or todo("ocr") or args.ocr_engine or not (read_json(vdir / "ocr.json", {}) or {}).get("engine"):
+        write_json(vdir / "ocr.json", analyze.recognize_text(frames, shots, fast=args.ocr_fast, engine_name=args.ocr_engine))
     if todo("audio"):
         if meta["has_audio"]:
             log("mapping audio…")
@@ -133,9 +134,14 @@ def write_overview(vdir: Path) -> Path:
         top = sorted(sorted(spans, key=lambda s: -s["hits"])[:200], key=lambda s: s["start"])
         lines += ["", "## On-screen text (what was shown)"]
         lines += [f"- [{fmt(s['start'])}–{fmt(s['end'])}] {s['text']}" for s in top]
+    if trn.get("events"):
+        lines += ["", "## Sounds (heard, not said)"]
+        lines += [f"- [{fmt(e['start'])}] {e['text']}" for e in trn["events"]]
     lines += ["", "## Transcript (what was said)"]
     if trn.get("segments"):
-        lines += [f"[{fmt(s['start'])}] {s['text']}" for s in trn["segments"]]
+        names = {s: f"S{i + 1}" for i, s in enumerate(trn.get("speakers") or [])}
+        tag = (lambda s: f"{names.get(s.get('speaker'), '?')}: ") if len(names) > 1 else (lambda s: "")
+        lines += [f"[{fmt(s['start'])}] {tag(s)}{s['text']}" for s in trn["segments"]]
     else:
         lines.append(f"_{trn.get('note') or 'No transcript.'}_")
     path = vdir / "overview.md"
@@ -177,8 +183,10 @@ def cmd_search(args) -> int:
     for vid in ids:
         vdir = HOME / vid
         title = (read_json(vdir / "source.json", {}) or {}).get("title") or vid
-        trn = (read_json(vdir / "transcript.json", {}) or {}).get("segments", [])
+        trn_doc = read_json(vdir / "transcript.json", {}) or {}
+        trn = trn_doc.get("segments", [])
         items = [("shown", s["start"], s["text"]) for s in (read_json(vdir / "ocr.json", {}) or {}).get("spans", [])]
+        items += [("heard", e["start"], e["text"]) for e in trn_doc.get("events", [])]
         def hit(text: str) -> bool:
             norm = _norm(text)
             return query in norm or bool(terms) and all(x in norm for x in terms)
@@ -320,8 +328,8 @@ def cmd_report(args) -> int:
     from . import report
     out = report.build(resolve(args.ref), resolve(args.vs) if args.vs else None)
     print(f"Report: {out}")
-    if args.open and shutil.which("open"):
-        subprocess.run(["open", str(out)])
+    if args.open:
+        webbrowser.open(Path(out).resolve().as_uri())
     return 0
 
 
@@ -346,16 +354,21 @@ def cmd_setup(args) -> int:
         tmp = dest.with_suffix(".part")
         urllib.request.urlretrieve(tr.MODEL_URL.format(name=name), tmp)
         tmp.replace(dest)
+    from .analyze import ocr_engine
+    pip = f"{sys.executable} -m pip install"
+    ocr = ocr_engine()
+    ocr_hint = ("xcode-select --install (Apple Vision)" if sys.platform == "darwin"
+                else f"{pip} rapidocr onnxruntime")
     checks = [
-        ("ffmpeg + ffprobe", bool(shutil.which("ffmpeg") and shutil.which("ffprobe")), True, "brew install ffmpeg"),
-        ("Pillow", importlib.util.find_spec("PIL") is not None, True, "python3 -m pip install pillow"),
-        ("numpy", importlib.util.find_spec("numpy") is not None, True, "python3 -m pip install numpy"),
-        ("yt-dlp (URLs)", bool(shutil.which("yt-dlp")), False, "brew install yt-dlp"),
-        ("whisper.cpp (videos without captions)", bool(tr.whisper_binary()), False, "brew install whisper-cpp"),
+        ("ffmpeg + ffprobe", bool(shutil.which("ffmpeg") and shutil.which("ffprobe")), True, install_hint("ffmpeg")),
+        ("Pillow", importlib.util.find_spec("PIL") is not None, True, f"{pip} pillow"),
+        ("numpy", importlib.util.find_spec("numpy") is not None, True, f"{pip} numpy"),
+        ("yt-dlp (URLs)", bool(shutil.which("yt-dlp")), False, install_hint("yt-dlp")),
+        ("whisper.cpp (local transcripts)", bool(tr.whisper_binary()), False, install_hint("whisper-cpp")),
         ("whisper.cpp model", bool(tr.find_model()), False, "eyes setup --download-model small.en"),
-        ("text recognition (Apple Vision or tesseract)",
-         bool((sys.platform == "darwin" and shutil.which("swift")) or shutil.which("tesseract")), False,
-         "macOS: xcode-select --install; elsewhere: install tesseract"),
+        (f"text recognition{f' ({ocr[0]})' if ocr else ''}", bool(ocr), False, ocr_hint),
+        ("ElevenLabs key (opt-in --transcriber elevenlabs)", bool(env_key("ELEVENLABS_API_KEY")), False,
+         "set ELEVENLABS_API_KEY"),
     ]
     ok = True
     for name, present, required, hint in checks:
@@ -377,10 +390,16 @@ def main() -> int:
     p.add_argument("--lang", help="spoken language code, e.g. de (default: the video's own language, else en)")
     p.add_argument("--quality", type=int, default=720, help="max download height for URLs (default 720)")
     p.add_argument("--title", help="display name for local files (default: file name)")
-    p.add_argument("--glossary", help="names and terms to help local transcription, e.g. 'Claude Code, FrameJam'")
+    p.add_argument("--glossary", help="names and terms the speaker uses, e.g. 'Claude Code, FrameJam'")
+    p.add_argument("--transcriber", choices=["auto", "captions", "whisper", "elevenlabs"],
+                   help="auto (default): uploaded captions, else local whisper, else automatic captions; "
+                        "captions: any platform captions; elevenlabs: upload audio to ElevenLabs Scribe "
+                        "for speaker labels and sound events")
     p.add_argument("--threshold", type=float, default=0.3, help="scene-cut sensitivity, lower finds more cuts")
     p.add_argument("--no-ocr", action="store_true")
     p.add_argument("--ocr-fast", action="store_true")
+    p.add_argument("--ocr-engine", choices=["auto", "vision", "rapidocr", "tesseract"],
+                   help="text recognition engine (default: Apple Vision on macOS, else RapidOCR, else tesseract)")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_index)
     p = sub.add_parser("overview")

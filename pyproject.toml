@@ -10,7 +10,15 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = ["pillow", "numpy"]
+dependencies = [
+    "pillow",
+    "numpy",
+    "rapidocr>=3; sys_platform != 'darwin'",
+    "onnxruntime; sys_platform != 'darwin'",
+]
+
+[project.optional-dependencies]
+ocr = ["rapidocr>=3", "onnxruntime"]
 
 [project.scripts]
 eyes = "eyes.cli:main"

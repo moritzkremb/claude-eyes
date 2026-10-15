@@ -20,6 +20,20 @@ def log(message: str) -> None:
     print(f"[eyes] {message}", file=sys.stderr, flush=True)
 
 
+INSTALL = {  # macOS, Linux, Windows
+    "ffmpeg": ("brew install ffmpeg", "sudo apt install ffmpeg", "winget install ffmpeg"),
+    "yt-dlp": ("brew install yt-dlp", "pipx install yt-dlp", "winget install yt-dlp"),
+    "whisper-cpp": ("brew install whisper-cpp", "build whisper.cpp from github.com/ggml-org/whisper.cpp",
+                    "download whisper.cpp from github.com/ggml-org/whisper.cpp/releases"),
+    "tesseract": ("brew install tesseract", "sudo apt install tesseract-ocr", "winget install UB-Mannheim.TesseractOCR"),
+}
+
+
+def install_hint(tool: str) -> str:
+    mac, linux, windows = INSTALL[tool]
+    return mac if sys.platform == "darwin" else windows if sys.platform == "win32" else linux
+
+
 def need(binary: str, hint: str) -> str:
     path = shutil.which(binary)
     if not path:
@@ -27,8 +41,23 @@ def need(binary: str, hint: str) -> str:
     return path
 
 
+def env_key(name: str) -> str | None:
+    """An API key from the environment, else from a .env file in the working directory."""
+    if os.environ.get(name):
+        return os.environ[name]
+    try:
+        for line in Path(".env").read_text(encoding="utf-8").splitlines():
+            key, sep, value = line.strip().removeprefix("export ").partition("=")
+            if sep and key.strip() == name:
+                return value.strip().strip("'\"") or None
+    except OSError:
+        pass
+    return None
+
+
 def run(cmd: list, *, check: bool = True, text: bool = True, input=None) -> subprocess.CompletedProcess:
-    result = subprocess.run([str(c) for c in cmd], capture_output=True, text=text, input=input)
+    result = subprocess.run([str(c) for c in cmd], capture_output=True, text=text, input=input,
+                            **({"encoding": "utf-8", "errors": "replace"} if text else {}))
     if check and result.returncode != 0:
         err = result.stderr if text else result.stderr.decode("utf-8", "replace")
         raise SystemExit(f"{Path(str(cmd[0])).name} failed ({result.returncode}): {err.strip()[-1500:]}")

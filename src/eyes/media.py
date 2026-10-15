@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .common import HOME, file_fingerprint, is_url, log, need, read_json, run, slug, write_json
+from .common import HOME, file_fingerprint, install_hint, is_url, log, need, read_json, run, slug, write_json
 
-YTDLP_HINT = "Install yt-dlp (brew install yt-dlp / pipx install yt-dlp) to index URLs, or pass a local file."
+YTDLP_HINT = f"Install yt-dlp ({install_hint('yt-dlp')}) to index URLs, or pass a local file."
 
 
 def _pick_caption(info: dict, lang: str | None) -> tuple[str, str] | None:
@@ -93,7 +93,7 @@ def _ingest_local(path_text: str) -> tuple[str, Path, dict]:
 
 
 def probe(media: str) -> dict:
-    ffprobe = need("ffprobe", "Install ffmpeg (brew install ffmpeg).")
+    ffprobe = need("ffprobe", f"Install ffmpeg ({install_hint('ffmpeg')}).")
     data = json.loads(run([ffprobe, "-v", "error", "-print_format", "json", "-show_format",
                            "-show_streams", media]).stdout)
     video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"
