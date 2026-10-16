@@ -14,6 +14,15 @@ Ideas for later, roughly in order of usefulness. Nothing here is promised.
     so search picks up what the first pass missed. Extends index on demand by section. Raised by @0xYinji.
   - A flag on `eyes index` to set the sampling rate by hand (today automatic only, via `sample_rate()` in
     `src/eyes/analyze.py`).
+  - **Keyframe fast mode.** `eyes index --fast` pulls only the keyframes already stored in the video file
+    instead of decoding every frame, so a 1-3 hour video can be skimmed in seconds before a full index.
+    Inspired by claude-video by Brad Bonanno.
+  - **Cue frames.** Grab a frame (or burst) wherever the transcript says "look here", "as you can see",
+    "notice" and similar, using the existing word timestamps, so the moments the speaker points at are
+    always captured. Inspired by claude-video by Brad Bonanno.
+  - **Thumbnail dedup.** Shrink frames to tiny thumbnails and drop near-duplicates before building contact
+    sheets, to cut tokens on talking-head and slide videos. One concrete form of lighter sampling where
+    nothing changes. Inspired by claude-video by Brad Bonanno.
 
 ## Distribution
 - **PyPI release** so install is `uv tool install claude-eyes` / `pipx install claude-eyes`.
