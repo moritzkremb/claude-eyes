@@ -362,24 +362,43 @@ def cmd_compare(args) -> int:
 
 
 def _open(path: Path) -> None:
-    webbrowser.open(Path(path).resolve().as_uri())
+    """Open a local file once, using the OS helper instead of webbrowser.open.
+
+    webbrowser.open walks every registered browser and treats xdg-open/gio's
+    immediate exit as failure, so the same file:// URL is opened twice.
+    """
+    path = Path(path).resolve()
+    if sys.platform == "darwin":
+        subprocess.run(["open", str(path)], check=False)
+    elif sys.platform == "win32":
+        os.startfile(path)  # type: ignore[attr-defined]
+    elif xdg := shutil.which("xdg-open"):
+        subprocess.Popen([xdg, str(path)], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        webbrowser.open(path.as_uri())
 
 
 def cmd_report(args) -> int:
     from . import report
     out = report.build(resolve(args.ref), resolve(args.vs) if args.vs else None)
-    emit({"report": str(out)}, f"Report: {out}")
     if args.open:
         _open(out)
+        emit({"report": str(out)}, f"Opened in your browser: {out}")
+    else:
+        emit({"report": str(out)}, f"Report: {out}")
     return 0
 
 
 def cmd_view(args) -> int:
     from . import view
     out = view.build(resolve(args.ref))
-    emit({"view": str(out)}, f"Viewer: {out}\nOpen it in a browser (double-click works). Space plays, arrows step frames.")
     if args.open:
         _open(out)
+        emit({"view": str(out)}, f"Opened in your browser: {out}")
+    else:
+        emit({"view": str(out)},
+             f"Viewer: {out}\nOpen it in a browser (double-click works). Space plays, arrows step frames.")
     return 0
 
 
